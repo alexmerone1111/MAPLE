@@ -809,6 +809,10 @@
                 }
             });
 
+            if (!isLive) {
+                term.writeln(`\x1b[1;36m---ACTIVE TERMINAL: ${titleText}---\x1b[0m\r\n`);
+            }
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = isLive 
                 ? `${protocol}//${window.location.host}/terminal/live`
@@ -929,7 +933,11 @@
             if (!group || group.isLive) return;
 
             if (group.terminals.length > 0) {
-                const idToKill = group.terminals.pop();
+                let idToKill = activeSessionId && group.terminals.includes(activeSessionId) 
+                    ? activeSessionId 
+                    : group.terminals[group.terminals.length - 1];
+                
+                group.terminals = group.terminals.filter(id => id !== idToKill);
                 const session = terminalSessions[idToKill];
                 
                 if (session) {

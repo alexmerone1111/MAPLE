@@ -51,6 +51,7 @@ wss.on('connection', (ws, req) => {
     const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     
     if (reqUrl.pathname === '/terminal/live') {
+        ws.isTerminal = true;
         ws.isLiveTerminal = true;
         logHistory.forEach(msg => {
             if (ws.readyState === WebSocket.OPEN) {
