@@ -705,6 +705,15 @@
             const id = await spawnProcess(type);
             if (!id) return;
 
+            if (!terminalGroups.some(g => g.id === group.id)) {
+                fetch(`${API_BASE}/terminal/kill`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                return;
+            }
+
             const num = getNextTerminalNumber();
             const titleText = '>_ Terminal ' + num;
             
@@ -868,6 +877,7 @@
             termWrapper.addEventListener('mousedown', () => {
                 document.getElementById('activeTerminalLabel').textContent = session.title;
                 activeSessionId = id;
+                updateTerminalHeaderUI();
             });
 
             updateTerminalHeaderUI();
@@ -930,7 +940,7 @@
             }
             
             const group = activeGroupId ? terminalGroups.find(terminalGroup => terminalGroup.id === activeGroupId) : null;
-            if (group && group.isLive) {
+            if (group && group.isLive && activeSessionId === 'live') {
                 killBtn.style.display = 'none';
             } else {
                 killBtn.style.display = count > 0 ? 'flex' : 'none';
@@ -945,12 +955,14 @@
         async function killActiveTerminal() {
             if (!activeGroupId) return;
             const group = terminalGroups.find(terminalGroup => terminalGroup.id === activeGroupId);
-            if (!group || group.isLive) return;
+            if (!group) return;
 
             if (group.terminals.length > 0) {
                 let idToKill = activeSessionId && group.terminals.includes(activeSessionId) 
                     ? activeSessionId 
                     : group.terminals[group.terminals.length - 1];
+                
+                if (idToKill === 'live') return;
                 
                 group.terminals = group.terminals.filter(id => id !== idToKill);
                 const session = terminalSessions[idToKill];
@@ -963,6 +975,9 @@
                     }).catch(error => console.error('Failed to kill backend process:', error));
                     
                     session.ws.close();
+                    if (session.fitAddon && typeof session.fitAddon.dispose === 'function') {
+                        session.fitAddon.dispose();
+                    }
                     session.term.dispose();
                     session.wrapper.remove();
                     session.tab.remove();
@@ -979,19 +994,12 @@
                         document.getElementById('terminal-container').innerHTML = '';
                         activeSessionId = null;
                         document.getElementById('activeTerminalLabel').style.display = 'none';
+                        updateTerminalHeaderUI();
                     }
                 } else {
-                    const remainingId = group.terminals[group.terminals.length - 1];
-                    if (remainingId && terminalSessions[remainingId]) {
-                        document.getElementById('activeTerminalLabel').textContent = terminalSessions[remainingId].title;
-                        activeSessionId = remainingId;
-                    }
-                    group.terminals.forEach(terminalId => {
-                        if (terminalSessions[terminalId]) setTimeout(() => terminalSessions[terminalId].fitAddon.fit(), 50);
-                    });
+                    switchTerminalGroup(group.id);
                 }
             }
-            updateTerminalHeaderUI();
         }
 
         async function copyConsoleOutput() {
