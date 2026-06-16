@@ -1,5 +1,5 @@
 ---
-title: MAPLE Dashboard
+title: MAPLE-Dashboard
 emoji: 🍁
 colorFrom: red
 colorTo: yellow

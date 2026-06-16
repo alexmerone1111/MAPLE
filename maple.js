@@ -4,6 +4,10 @@ const { exec, execFile } = require('child_process');
 const config = require('./config.json');
 const http = require('http');
 const WebSocket = require('ws');
+const pty = require('node-pty');
+const url = require('url');
+
+const terminalSessions = {};
 
 const app = express();
 app.use(express.json());
@@ -15,7 +19,44 @@ const wss = new WebSocket.Server({ server });
 let isStreaming = false;
 let isConnecting = false;
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+    const reqUrl = url.parse(req.url, true);
+    
+    if (reqUrl.pathname === '/terminal') {
+        const id = reqUrl.query.id;
+        ws.isTerminal = true;
+        ws.terminalId = id;
+        const ptyProcess = terminalSessions[id];
+        
+        if (!ptyProcess) {
+            ws.close();
+            return;
+        }
+
+        const onData = (data) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        };
+        ptyProcess.on('data', onData);
+
+        ws.on('message', (msg) => {
+            if (ptyProcess && !ptyProcess.killed) {
+                try {
+                    ptyProcess.write(msg.toString());
+                } catch (e) {
+                    console.error('Error writing to pty:', e);
+                }
+            }
+        });
+
+        ws.on('close', () => {
+            ptyProcess.removeListener('data', onData);
+        });
+
+        return;
+    }
+
     console.log('Client connected to WebSocket stream');
 
     if (!isStreaming) {
@@ -29,7 +70,7 @@ wss.on('connection', (ws) => {
                     if (isStreaming) setTimeout(sendFrame, refreshRate * 2);
                 } else if (stdout && stdout.length > 0) {
                     wss.clients.forEach(client => {
-                        if (client.readyState === WebSocket.OPEN) {
+                        if (client.readyState === WebSocket.OPEN && !client.isTerminal) {
                             client.send(stdout);
                         }
                     });
@@ -44,11 +85,63 @@ wss.on('connection', (ws) => {
 
     ws.on('close', () => {
         console.log('Client disconnected from stream');
-        if (wss.clients.size === 0) {
-            console.log('No more clients, stopping stream...');
+        const hasStreamClients = Array.from(wss.clients).some(c => !c.isTerminal);
+        if (!hasStreamClients) {
+            console.log('No more stream clients, stopping stream...');
             isStreaming = false;
         }
     });
+});
+
+app.post('/api/terminal/spawn', (req, res) => {
+    const { type } = req.body;
+    const id = Date.now().toString();
+    const command = type === 'root' ? 'su' : 'bash';
+    const args = type === 'root' ? ['-'] : [];
+    
+    try {
+        const ptyProcess = pty.spawn(command, args, {
+            name: 'xterm-color',
+            cols: 80,
+            rows: 24,
+            cwd: process.env.HOME || '/data/data/com.termux/files/home',
+            env: process.env
+        });
+
+        ptyProcess.on('exit', () => {
+            delete terminalSessions[id];
+            wss.clients.forEach(client => {
+                if (client.isTerminal && client.terminalId === id) {
+                    client.close();
+                }
+            });
+        });
+
+        terminalSessions[id] = ptyProcess;
+        res.json({ id });
+    } catch (e) {
+        console.error('Failed to spawn terminal:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/terminals', (req, res) => {
+    res.json({ sessions: Object.keys(terminalSessions) });
+});
+
+app.post('/api/terminal/kill', (req, res) => {
+    const { id } = req.body;
+    if (terminalSessions[id]) {
+        try {
+            terminalSessions[id].kill();
+        } catch (error) {
+            console.error(`Error killing terminal ${id}:`, error.message);
+        }
+        delete terminalSessions[id];
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ error: 'Session not found' });
+    }
 });
 
 let accounts = [];
@@ -113,7 +206,7 @@ async function injectAndLaunch() {
 
     await killRoblox();
     await new Promise(resolve => setTimeout(resolve, 1000));
-    if (!isRunning) return; // Abort if user clicked Stop
+    if (!isRunning) return;
 
     console.log(`Wiping current Roblox app data...`);
     if (!(await executeShell('su -c "pm clear com.roblox.client"'))) return handleCrash();
@@ -234,11 +327,11 @@ app.post('/api/touch', (req, res) => {
 });
 
 app.post('/api/swipe', (req, res) => {
-    const { x1, y1, x2, y2, duration } = req.body;
-    const absoluteX1 = Math.round(x1 * screenWidth);
-    const absoluteY1 = Math.round(y1 * screenHeight);
-    const absoluteX2 = Math.round(x2 * screenWidth);
-    const absoluteY2 = Math.round(y2 * screenHeight);
+    const { startX, startY, endX, endY, duration } = req.body;
+    const absoluteX1 = Math.round(startX * screenWidth);
+    const absoluteY1 = Math.round(startY * screenHeight);
+    const absoluteX2 = Math.round(endX * screenWidth);
+    const absoluteY2 = Math.round(endY * screenHeight);
     execFile('su', ['-c', `input swipe ${absoluteX1} ${absoluteY1} ${absoluteX2} ${absoluteY2} ${duration || 300}`]);
     res.json({ success: true });
 });
@@ -246,7 +339,6 @@ app.post('/api/swipe', (req, res) => {
 app.post('/api/text', (req, res) => {
     let text = req.body.text || "";
     text = text.replace(/ /g, '%s');
-    // Escape single quotes for the inner shell
     text = text.replace(/'/g, "'\\''");
     execFile('su', ['-c', `input text '${text}'`]);
     res.json({ success: true });
@@ -314,7 +406,6 @@ app.post('/api/start', async (req, res) => {
     currentAccountIndex = 0;
     retryCount = 0;
     
-    // Reset invalid tags when restarting the whole sequence
     accounts.forEach(account => account.invalid = false);
     
     injectAndLaunch();
@@ -350,7 +441,6 @@ app.post('/api/relaunch', (req, res) => {
     console.log('Received relaunch request. Relaunching current account...');
     if (heartbeatTimer) clearTimeout(heartbeatTimer);
     
-    // Reset retry count so manual relaunches don't accidentally trigger a cycle
     retryCount = 0; 
     injectAndLaunch();
 
@@ -372,7 +462,7 @@ app.post('/api/launch', async (req, res) => {
     isConnecting = true;
     currentAccountIndex = index;
     retryCount = 0;
-    accounts[index].invalid = false; // Reset invalid status if manually launched
+    accounts[index].invalid = false;
 
     if (heartbeatTimer) clearTimeout(heartbeatTimer);
     injectAndLaunch();

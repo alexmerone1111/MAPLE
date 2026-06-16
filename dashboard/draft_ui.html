@@ -661,18 +661,7 @@
         }
 
         async function spawnProcess(type) {
-            try {
-                const res = await fetch(`${API_BASE}/terminal/spawn`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ type })
-                });
-                const data = await res.json();
-                return data.id;
-            } catch (err) {
-                showToast('Failed to spawn terminal: ' + err.message);
-                return null;
-            }
+            return "mock_" + Math.random().toString(36).substring(7);
         }
 
         async function createTerminalSession(type = 'root') {
@@ -788,28 +777,22 @@
                 }
             });
 
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${protocol}//${window.location.host}/terminal?id=${id}`);
+            term.writeln(`Welcome to ${titleText}`);
+            term.write('\r\n$ ');
             
-            ws.onmessage = (event) => {
-                if (event.data instanceof Blob) {
-                    const reader = new FileReader();
-                    reader.onload = () => term.write(reader.result);
-                    reader.readAsText(event.data);
-                } else {
-                    term.write(event.data);
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.error(`WebSocket error for terminal ${id}:`, error);
-            };
-            
-            term.onData(data => {
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(data);
+            term.onData(event => {
+                switch (event) {
+                    case '\r': 
+                        term.write('\r\n$ ');
+                        break;
+                    case '\u007F': 
+                        term.write('\b \b');
+                        break;
+                    default:
+                        term.write(event);
                 }
             });
+            const ws = { close: () => {}, readyState: 1 };
             
             const session = { term, fitAddon, ws, wrapper: termWrapper, container: termContainer, tab: dropdownItem, title: titleText };
             terminalSessions[id] = session;
@@ -907,12 +890,6 @@
                 const session = terminalSessions[idToKill];
                 
                 if (session) {
-                    fetch(`${API_BASE}/terminal/kill`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ id: idToKill })
-                    }).catch(error => console.error('Failed to kill backend process:', error));
-                    
                     session.ws.close();
                     session.term.dispose();
                     session.wrapper.remove();
@@ -995,20 +972,7 @@
                 }
             });
 
-            try {
-                const res = await fetch(`${API_BASE}/terminals`);
-                const data = await res.json();
-                if (data.sessions && data.sessions.length > 0) {
-                    for (const id of data.sessions) {
-                        await reconnectTerminalSession(id);
-                    }
-                } else {
-                    createTerminalSession('root');
-                }
-            } catch (err) {
-                console.error("Failed to sync terminals:", err);
-                createTerminalSession('root');
-            }
+            createTerminalSession('root');
         });
 
         function toggleConsoleFullscreen() {
